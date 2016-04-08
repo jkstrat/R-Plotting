@@ -1,0 +1,151 @@
+##############################################################
+#
+# Purpose:  to plot variant linearity
+# Author:   Jeran Stratford
+# Date:     4-7-2016
+# Input:    2 vcf files
+# Output:   ggplot generated scatter plot
+#
+# Example:  I have taken 1 sample and processed it retaining duplicates
+#           and I processed it removing duplicates using Picard. I want
+#           to see if removing the duplicates changes the frequency of
+#           the variants that we call.
+#
+##############################################################
+
+#Clear the saved variables
+rm(list=ls())
+
+####Load the necessary packages
+# To Make pretty plots
+if (!require("ggplot2")) {
+  install.packages("ggplot2", dependencies = TRUE) 
+}
+
+# For reading in very large vcf files
+if (!require("data.table")) {
+  install.packages("data.table", dependencies = TRUE) 
+}
+
+#### Function to read in and parse a VCF file
+read.vcf <- function(fileName, wd=getwd()) {
+  
+  #Set the directory
+  setwd(wd)
+  
+  #Read in the VCF one line at a time.
+  con=file(fileName,open="r")
+  lin=readLines(con)
+  
+  #Figure out which lines start with the "#" sign but not the "##" sign
+  cNames <- strsplit(as.character(
+    substr(lin[setdiff(grep(pattern="#", lin), grep(pattern="##", lin))],
+           start = 2,
+           stop = nchar(lin[setdiff(grep(pattern="#", lin), grep(pattern="##", lin))]))
+  ),"\t")
+  headers <- lin[grep(pattern="##", lin)]
+  
+  #Remove the files you don't need anymore
+  close(con)
+  rm(con, lin)
+  
+  #Read in the vcf file without reading in the lines starting with #
+  vcf <- read.table(fileName, comment.char ="#", sep = '\t')
+  colnames(vcf) <- cNames[[1]]
+  
+  #extract the colnames for the values in the format column
+  format <- strsplit(as.character(vcf[,9]),":")[[1]]
+  cNames2 <- c()
+  for (i in 1:length(format)){
+    #Possible to use regex but the stop variable isn't working
+    #substr(x = as.character(headers[grep(format[1], headers)]),
+    #       start = gregexpr(pattern ='Description=',headers[grep(format[1], headers)])[[1]][1] + 15,
+    #       stop = nchar(headers[grep(format[1], headers)]) - 5
+    #)
+    
+    cNames2[i] <- as.character(strsplit(headers[grep(format[i], headers)], '"')[[1]][2])
+    cNames2 <- gsub(" ", "_", cNames2)
+    cNames2 <- gsub("-", "_", cNames2)
+  }
+  
+  #Split apart the format column and label with appropriate headers
+  for(i in 1:length(format)){
+    vcf[, cNames2[i]] <- c(sapply(strsplit(as.character(vcf[,10]), ":"), "[[", i))
+  }
+  return(vcf)
+}
+
+#### Function to prepare the dataset
+data.prep <- function(data_in){
+  #assign the sample pairs needed for the comparison
+  x <- read.vcf(fileName = data_in)
+  x$ID <- paste(x$CHROM,x$POS,x$REF,x$ALT,sep='_')
+  x$sID <- paste(x$CHROM,x$POS,sep='_')
+  #Convert ALT and Sample from factor to character
+  x$ALT <- as.character(x$ALT)
+  x[,10] <- as.character(x[,10])
+  
+  
+  #which columns contain comma separated values
+  if(length(grep(x=as.character(x$ALT), pattern=','))>0){
+    commas <- grep(x=x[grep(x=as.character(x$ALT), pattern=','),][1,], pattern=",")
+    
+    #subset the data based on the rows that have commas in the ALT column
+    comma_sub <- x[grep(x=as.character(x$ALT), pattern=','),]
+    
+    #Loop through the subsetted dataframe and keep the value before the comma
+    for (i in 1:length(commas)){
+      x[,commas[i]] <- sapply(strsplit(as.character(x[,commas[i]]), ","), `[`, 1)
+    }
+    
+    #Keep the value that comes after the comma
+    #for (i in 1:length(commas)){
+    #  comma_sub[,commas[i]] <- sapply(strsplit(as.character(comma_sub[,commas[i]]), ","), `[`, 2)
+    #}
+    
+    #Combine the two datasets
+    #original <- rbind(original, comma_sub)
+  }
+  
+  x$log_p_value <- -log(as.numeric(x$Adjusted_p_value))
+  x$Allele_Frequency <- as.numeric(x$Allele_Frequency)
+  x$Total_Depth_at_position <- as.numeric(x$Total_Depth_at_position)
+  return(x)
+}
+
+#### Read in the two vcfs to make the plot
+setwd("Wherever your vcfs live")
+samples <- list.files(pattern="_snv.vcf")
+
+vcf1 <- paste0(getwd(),"/",samples[2])
+vcf2 <- paste0(getwd(),"/",samples[1])
+
+assign(x="original", data.prep(data_in=vcf1))
+assign(x="modified", data.prep(data_in=vcf2))
+
+#### Find the variants that appear in both vcfs
+df <- merge(original[,c("CHROM","POS","Allele_Frequency", "ID")], modified[,c("ID","Allele_Frequency")], by = "ID", all=TRUE)
+
+p <- ggplot(data=df, aes(Allele_Frequency.x, Allele_Frequency.y ), stat="identity", position="identity")
+p + geom_point(data=df, size = 2) + 
+  theme_bw() + 
+  xlab("Allele frequency in original dataset") +
+  ylab("Allele frequency in modified dataset") +
+  xlim(0,1) +
+  ylim(0,1) +
+  ggtitle("Variant Linearity")
+  ggsave(filename = "Variant Linearity", plot=last_plot(), path="C:/Users/Q805788/Desktop")
+
+#### Make a plot with no text or labels for use on a poster
+p <- ggplot(data=df, aes(Allele_Frequency.x, Allele_Frequency.y ), stat="identity", position="identity")
+p + geom_point(data=df, colour="blue3", size = 2) + 
+  scale_colour_brewer(palette = "Set1") +
+  theme_bw() + 
+  theme(legend.position="none",
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.ticks=element_blank(), 
+        axis.text=element_blank()) + 
+  xlim(0,1) +
+  ylim(0,1) 
+
